@@ -1,0 +1,39 @@
+[Unit]
+Description=ipvsman (IPVS manager daemon)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/ipvsman
+ExecStart=/usr/local/sbin/ipvsman.py --service $IPVSMAN_EXTRA_ARGS
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+RuntimeDirectory=ipvsman
+KillMode=mixed
+
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0027
+KeyringMode=private
+
+[Install]
+WantedBy=multi-user.target
