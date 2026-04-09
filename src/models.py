@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 try:
-    from pydantic import BaseModel, ConfigDict, Field, field_validator
+    from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 except ModuleNotFoundError:  # pragma: no cover - fallback for minimal envs
     class BaseModel:  # type: ignore[override]
         """Very small compatibility shim when pydantic is unavailable."""
@@ -32,6 +32,12 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal envs
         return default
 
     def field_validator(*_args: Any, **_kwargs: Any):
+        def _wrap(func: Any) -> Any:
+            return func
+
+        return _wrap
+
+    def model_validator(*_args: Any, **_kwargs: Any):
         def _wrap(func: Any) -> Any:
             return func
 
@@ -76,14 +82,55 @@ class Backend(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ip: str
+    address: str
     weight: int = Field(default=1, ge=0, le=65535)
     port_map: dict[str, int] = Field(default_factory=dict)
     check_target: CheckTarget | None = None
     check_ref: str | None = None
     disabled: bool = False
-    method: Literal["routing", "nat"] = "routing"
+    method: Literal["routing", "nat"] = "nat"
     proxy_method: Literal["routing", "nat"] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_address_alias(cls, value: Any) -> Any:
+        """Accept `address` (preferred) and `ip` (alias) on input.
+
+        Input:
+        - value: Raw backend payload from YAML.
+
+        Output:
+        - Normalized payload with canonical `address` key.
+        """
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        addr = data.get("address")
+        ip = data.get("ip")
+        if addr is None and ip is not None:
+            data["address"] = ip
+        elif addr is not None and ip is not None and str(addr) != str(ip):
+            raise ValueError("backend ip/address mismatch")
+        data.pop("ip", None)
+        return data
+
+    @property
+    def ip(self) -> str:
+        """Backward-compatible alias for backend address.
+
+        Output:
+        - Canonical backend address value.
+        """
+        return self.address
+
+    @ip.setter
+    def ip(self, value: str) -> None:
+        """Backward-compatible setter for backend address alias.
+
+        Input:
+        - value: Backend address value.
+        """
+        self.address = value
 
     @field_validator("port_map", mode="before")
     @classmethod

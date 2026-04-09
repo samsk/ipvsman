@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import signal
 import sys
 import threading
 import time
@@ -24,7 +26,7 @@ from src.constants import (
 from src.config import has_cli_action, parse_config
 from src.loader import load_snapshot
 from src.list_views import list_backends, list_frontends, list_healthchecks, list_services
-from src.lock import ProcessLock
+from src.lock import ProcessLock, read_lock_pid
 from src.logging_util import setup_logging
 from src.manual_checks import run_manual_checks
 from src.metrics import MetricsServer
@@ -125,6 +127,89 @@ def _print_listing(snapshot: dict[str, Any], cfg: Any) -> int:
     return 0
 
 
+def _print_live_stats(cfg: Any) -> int:
+    """Print live IPVS stats in selected output format."""
+    try:
+        stats = ipvs_exec.read_stats()
+    except Exception as exc:
+        print(f"ipvsman: stats read failed: {exc}", file=sys.stderr)
+        return 2
+    if cfg.output == "json":
+        payload = {
+            "services": [
+                {
+                    "proto": svc.proto,
+                    "vip": svc.vip,
+                    "port": svc.port,
+                    "conns": svc.conns,
+                    "inpkts": svc.inpkts,
+                    "outpkts": svc.outpkts,
+                    "inbytes": svc.inbytes,
+                    "outbytes": svc.outbytes,
+                    "reals": [
+                        {
+                            "ip": rs.ip,
+                            "port": rs.port,
+                            "conns": rs.active_conn,
+                            "inpkts": rs.inpkts,
+                            "outpkts": rs.outpkts,
+                            "inbytes": rs.inbytes,
+                            "outbytes": rs.outbytes,
+                        }
+                        for rs in svc.reals
+                    ],
+                }
+                for svc in stats.services
+            ]
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    rows: list[tuple[str, str, str, int, int, int, int, int]] = []
+    for svc in stats.services:
+        rows.append(("svc", svc.proto, f"{svc.vip}:{svc.port}", svc.conns, svc.inpkts, svc.outpkts, svc.inbytes, svc.outbytes))
+        for rs in svc.reals:
+            rows.append(("rs", svc.proto, f"{rs.ip}:{rs.port}", rs.active_conn, rs.inpkts, rs.outpkts, rs.inbytes, rs.outbytes))
+    col_proto = "PROTO"
+    col_name = "NAME"
+    col_conns = "CONNS"
+    col_inpkts = "INPKTS"
+    col_outpkts = "OUTPKTS"
+    col_inbytes = "INBYTES"
+    col_outbytes = "OUTBYTES"
+    proto_w = max(len(col_proto), *(len(r[1]) for r in rows)) if rows else len(col_proto)
+    name_w = max(len(col_name), *(len(r[2]) for r in rows)) if rows else len(col_name)
+    conns_w = max(len(col_conns), *(len(str(r[3])) for r in rows)) if rows else len(col_conns)
+    inpkts_w = max(len(col_inpkts), *(len(str(r[4])) for r in rows)) if rows else len(col_inpkts)
+    outpkts_w = max(len(col_outpkts), *(len(str(r[5])) for r in rows)) if rows else len(col_outpkts)
+    inbytes_w = max(len(col_inbytes), *(len(str(r[6])) for r in rows)) if rows else len(col_inbytes)
+    outbytes_w = max(len(col_outbytes), *(len(str(r[7])) for r in rows)) if rows else len(col_outbytes)
+    header = (
+        f"{'TYPE':<4} "
+        f"{col_proto:<{proto_w}} "
+        f"{col_name:<{name_w}} "
+        f"{col_conns:>{conns_w}} "
+        f"{col_inpkts:>{inpkts_w}} "
+        f"{col_outpkts:>{outpkts_w}} "
+        f"{col_inbytes:>{inbytes_w}} "
+        f"{col_outbytes:>{outbytes_w}}"
+    )
+    print(header)
+    print("-" * len(header))
+    for kind, proto, name, conns, inpkts, outpkts, inbytes, outbytes in rows:
+        row_type = "svc" if kind == "svc" else "rs"
+        print(
+            f"{row_type:<4} "
+            f"{proto:<{proto_w}} "
+            f"{name:<{name_w}} "
+            f"{conns:>{conns_w}} "
+            f"{inpkts:>{inpkts_w}} "
+            f"{outpkts:>{outpkts_w}} "
+            f"{inbytes:>{inbytes_w}} "
+            f"{outbytes:>{outbytes_w}}"
+        )
+    return 0
+
+
 def _apply_runtime_disables(snapshot: dict[str, Any], cfg: Any) -> None:
     """Apply one-shot runtime disable flags."""
     for grp in snapshot.get("groups", []):
@@ -213,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     if not cfg.service_mode and not has_cli_action(cfg):
         print(
             "ipvsman: specify --service (daemon) or a one-shot action "
-            "(--test, --list-services, --status, --status-detailed, --reset, --healthcheck-now, --disable-*, --enable-*, ...)",
+            "(--test, --list-services, --status, --stats, --status-detailed, --reset, --dump, --reload, --healthcheck-now, --disable-*, --enable-*, ...)",
             file=sys.stderr,
         )
         return 2
@@ -227,6 +312,34 @@ def main(argv: list[str] | None = None) -> int:
         log.info("start argv=%s config_dir=%s service=%s", cli_args, cfg.config_dir, cfg.service_mode)
     if cfg.api_enable and not cfg.api_token and cfg.api_host not in {"127.0.0.1", "localhost", "::1"}:
         log.critical("ALERT: API exposed on non-localhost without token (host=%s)", cfg.api_host)
+
+    if cfg.dump_mode:
+        try:
+            print(ipvs_exec.read_dump(), end="")
+            return 0
+        except Exception as exc:
+            log.error("ipvs dump failed: %s", exc)
+            return 2
+
+    if cfg.stats_mode:
+        return _print_live_stats(cfg)
+
+    if cfg.reload_mode:
+        try:
+            _ = load_snapshot(cfg.config_dir)
+        except Exception as exc:
+            log.error("reload validation failed: %s", exc)
+            return 2
+        pid = cfg.pid_hint if cfg.pid_hint is not None else read_lock_pid(cfg.lock_file)
+        if pid is None:
+            log.error("reload failed: cannot read daemon pid (lock_file=%s)", cfg.lock_file)
+            return 2
+        try:
+            os.kill(pid, signal.SIGHUP)
+            return 0
+        except OSError as exc:
+            log.error("reload failed: cannot signal pid %s: %s", pid, exc)
+            return 2
 
     try:
         snapshot = load_snapshot(cfg.config_dir)
@@ -336,17 +449,25 @@ def main(argv: list[str] | None = None) -> int:
 
     state = RuntimeState()
     state.desired_snapshot = snapshot
-    state.desired_generation = 1
     state.config_version_mtime = float(snapshot.get("config_version_mtime", 0.0))
+    state.desired_generation = int(state.config_version_mtime)
     state.loaded_files_count = int(snapshot.get("loaded_files_count", 0))
 
     reloader = ReloadRuntime(cfg.config_dir, state, log)
-    checker = CheckRuntime(cfg.check_workers, state)
+    checker = CheckRuntime(cfg.check_workers, state, log=log)
     applier = ApplyRuntime(state, log)
     shutdown_timeout = max(0.5, cfg.shutdown_timeout)
     metrics_on_api = bool(cfg.api_enable and cfg.prometheus_metrics)
     metrics = (
-        MetricsServer(state, cfg.prometheus_host, cfg.prometheus_port, shutdown_timeout=shutdown_timeout)
+        MetricsServer(
+            state,
+            cfg.prometheus_host,
+            cfg.prometheus_port,
+            shutdown_timeout=shutdown_timeout,
+            include_ipvs_stats=cfg.prometheus_metrics_stats,
+            include_healthchecks=cfg.prometheus_metrics_healthchecks,
+            ipvs_stats_labels_mode=cfg.prometheus_metrics_stats_labels,
+        )
         if (cfg.prometheus_metrics and not metrics_on_api)
         else None
     )
@@ -360,6 +481,9 @@ def main(argv: list[str] | None = None) -> int:
             enable_write=cfg.api_enable_write,
             max_body_bytes=cfg.api_max_body_bytes,
             enable_metrics=metrics_on_api,
+            metrics_include_ipvs_stats=cfg.prometheus_metrics_stats,
+            metrics_include_healthchecks=cfg.prometheus_metrics_healthchecks,
+            metrics_ipvs_stats_labels_mode=cfg.prometheus_metrics_stats_labels,
             shutdown_timeout=shutdown_timeout,
         )
         if cfg.api_enable

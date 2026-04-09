@@ -40,7 +40,36 @@ class LoaderTest(unittest.TestCase):
             svc = snap["groups"][0]["services"][0]
             self.assertEqual(svc["vip"], "127.0.0.1")
             self.assertEqual(svc["reals"][0]["ip"], "10.0.0.1")
-            self.assertEqual(svc["reals"][0]["method"], "routing")
+            self.assertEqual(svc["reals"][0]["address"], "10.0.0.1")
+            self.assertEqual(svc["reals"][0]["method"], "nat")
+
+    def test_backend_address_field_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for d in ("groups", "backends", "backend-maps", "check-refs"):
+                (root / d).mkdir()
+            (root / "groups" / "a.yaml").write_text(
+                """
+- group: dns
+  vip: 127.0.0.1
+  frontends:
+    - name: dns
+      proto: udp
+      port: 53
+  backends:
+    - address: dns-backend.internal
+      weight: 1
+  healthcheck:
+    type: tcp
+""",
+                encoding="utf-8",
+            )
+            fake_info = [(2, 1, 6, "", ("10.0.0.10", 0))]
+            with patch("src.loader.socket.getaddrinfo", return_value=fake_info):
+                snap = load_snapshot(root)
+            real = snap["groups"][0]["services"][0]["reals"][0]
+            self.assertEqual(real["address"], "dns-backend.internal")
+            self.assertEqual(real["ip"], "10.0.0.10")
 
     def test_duplicate_group_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

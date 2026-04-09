@@ -59,7 +59,7 @@ class RuntimeState:
 
 
 def update_desired_snapshot(state: RuntimeState, snapshot: dict[str, Any], carry_live_state: bool = False) -> int:
-    """Store desired snapshot and bump generation.
+    """Store desired snapshot and set mtime-based generation.
 
     Inputs:
     - state: shared runtime state to update.
@@ -67,7 +67,7 @@ def update_desired_snapshot(state: RuntimeState, snapshot: dict[str, Any], carry
     - carry_live_state: when True, keep previous live_state.
 
     Output:
-    - New desired generation value.
+    - New desired generation value (from config mtime, integer seconds).
     """
     with state.lock:
         _apply_unresolved_backend_fallback(state, state.desired_snapshot, snapshot)
@@ -76,9 +76,9 @@ def update_desired_snapshot(state: RuntimeState, snapshot: dict[str, Any], carry
             live_state = state.desired_snapshot.get("live_state")
             if live_state is not None:
                 snapshot["live_state"] = live_state
-        state.desired_generation += 1
-        snapshot["desired_generation"] = state.desired_generation
         state.config_version_mtime = float(snapshot.get("config_version_mtime", 0.0))
+        state.desired_generation = int(state.config_version_mtime)
+        snapshot["desired_generation"] = state.desired_generation
         state.loaded_files_count = int(snapshot.get("loaded_files_count", 0))
         state.desired_snapshot = snapshot
         return state.desired_generation

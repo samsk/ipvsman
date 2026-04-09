@@ -41,13 +41,31 @@ def _ensure_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _normalize_backend_row(row: Any) -> Any:
+    """Normalize backend aliases before model validation.
+
+    Input:
+    - row: Raw backend mapping from YAML.
+
+    Output:
+    - Row with canonical `address` key and optional `ip` removed.
+    """
+    if not isinstance(row, dict):
+        return row
+    out = dict(row)
+    if "address" not in out and "ip" in out:
+        out["address"] = out["ip"]
+    out.pop("ip", None)
+    return out
+
+
 def _load_backend_pool(config_dir: Path, group: Group) -> list[Backend]:
-    inline = [Backend.model_validate(x) for x in group.backends]
+    inline = [Backend.model_validate(_normalize_backend_row(x)) for x in group.backends]
     file_backends: list[Backend] = []
     for file_path in resolve_backend_file_paths(config_dir, group.backend_files):
         content = _load_yaml_file(file_path)
         for row in _ensure_list(content):
-            file_backends.append(Backend.model_validate(row))
+            file_backends.append(Backend.model_validate(_normalize_backend_row(row)))
 
     map_backends: list[Backend] = []
     if group.backend_map_ref:
@@ -62,7 +80,7 @@ def _load_backend_pool(config_dir: Path, group: Group) -> list[Backend]:
                     raise ValueError(f"duplicate backend map key: {key}")
                 merged_maps[key] = _ensure_list(value)
         for row in merged_maps.get(group.backend_map_ref, []):
-            map_backends.append(Backend.model_validate(row))
+            map_backends.append(Backend.model_validate(_normalize_backend_row(row)))
 
     return merge_backends(inline, file_backends, map_backends)
 
@@ -105,7 +123,7 @@ def _expand_backend_hosts(
     backend_pool: list[Backend],
     warnings: list[str],
     group_name: str,
-) -> list[Backend]:
+) -> list[tuple[Backend, str]]:
     """Resolve backend hostnames into IP backends.
 
     Input:
@@ -116,7 +134,7 @@ def _expand_backend_hosts(
     Output:
     - Backend list with hostnames expanded to IP entries.
     """
-    expanded: list[Backend] = []
+    expanded: list[tuple[Backend, str]] = []
     for backend in backend_pool:
         ip_raw = str(backend.ip)
         try:
@@ -125,14 +143,14 @@ def _expand_backend_hosts(
         except Exception:
             resolved = []
         if not resolved:
-            expanded.append(backend)
+            expanded.append((backend, ip_raw))
             continue
         if len(resolved) > 1:
             warnings.append(f"group={group_name} backend={ip_raw} resolved multiple IPs: {', '.join(resolved)}")
         for ip_addr in resolved:
             be = copy.deepcopy(backend)
             be.ip = ip_addr
-            expanded.append(be)
+            expanded.append((be, ip_raw))
     return expanded
 
 
@@ -172,7 +190,7 @@ def load_snapshot(config_dir: Path) -> dict[str, Any]:
                     if vip is None:
                         raise ValueError(f"group={group.group} frontend={frontend.name}: vip missing")
                     reals: list[dict[str, Any]] = []
-                    for backend in backend_pool:
+                    for backend, backend_address in backend_pool:
                         if backend.disabled or group.disabled or frontend.disabled:
                             eff_weight = 0
                         else:
@@ -183,9 +201,10 @@ def load_snapshot(config_dir: Path) -> dict[str, Any]:
                             target = check_refs.get(backend.check_ref)
                         if target is None:
                             target = CheckTarget(ip=backend.ip, port=rs_port, type=group_hc.type)
-                        method = backend.method if getattr(backend, "method", None) else (backend.proxy_method or "routing")
+                        method = backend.method if getattr(backend, "method", None) else (backend.proxy_method or "nat")
                         reals.append(
                             {
+                                "address": backend_address,
                                 "ip": backend.ip,
                                 "port": rs_port,
                                 "configured_weight": backend.weight,

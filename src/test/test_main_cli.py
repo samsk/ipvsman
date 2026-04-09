@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import io
+import signal
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
+from contextlib import redirect_stdout
 
 from src.main import main
 
@@ -150,6 +154,95 @@ class MainCliTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             mock_apply.assert_called_once()
             mock_lock.assert_not_called()
+
+    def test_dump_runs_without_config_load(self) -> None:
+        output = io.StringIO()
+        with (
+            patch("src.main.ipvs_exec.read_dump", return_value="-A -t 127.0.0.1:80 -s wrr\n") as mock_dump,
+            patch("src.main.load_snapshot") as mock_load,
+            redirect_stdout(output),
+        ):
+            rc = main(["--dump", "--no-syslog"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(output.getvalue(), "-A -t 127.0.0.1:80 -s wrr\n")
+        mock_dump.assert_called_once()
+        mock_load.assert_not_called()
+
+    def test_dump_failure_returns_2(self) -> None:
+        with (
+            patch("src.main.ipvs_exec.read_dump", side_effect=RuntimeError("boom")),
+            patch("src.main.load_snapshot") as mock_load,
+        ):
+            rc = main(["--dump", "--no-syslog"])
+        self.assertEqual(rc, 2)
+        mock_load.assert_not_called()
+
+    def test_reload_validates_and_signals_pid_hint(self) -> None:
+        with (
+            patch("src.main.load_snapshot", return_value={"groups": []}) as mock_load,
+            patch("src.main.os.kill") as mock_kill,
+            patch("src.main.read_lock_pid") as mock_lock_pid,
+        ):
+            rc = main(["--reload", "--pid", "1234", "--no-syslog"])
+        self.assertEqual(rc, 0)
+        mock_load.assert_called_once()
+        mock_kill.assert_called_once_with(1234, signal.SIGHUP)
+        mock_lock_pid.assert_not_called()
+
+    def test_reload_reads_lock_pid_when_hint_missing(self) -> None:
+        with (
+            patch("src.main.load_snapshot", return_value={"groups": []}),
+            patch("src.main.read_lock_pid", return_value=5678) as mock_lock_pid,
+            patch("src.main.os.kill") as mock_kill,
+        ):
+            rc = main(["--reload", "--no-syslog"])
+        self.assertEqual(rc, 0)
+        mock_lock_pid.assert_called_once()
+        mock_kill.assert_called_once_with(5678, signal.SIGHUP)
+
+    def test_reload_fails_when_validation_fails(self) -> None:
+        with (
+            patch("src.main.load_snapshot", side_effect=RuntimeError("invalid")),
+            patch("src.main.os.kill") as mock_kill,
+        ):
+            rc = main(["--reload", "--pid", "1234", "--no-syslog"])
+        self.assertEqual(rc, 2)
+        mock_kill.assert_not_called()
+
+    def test_reload_fails_when_pid_missing(self) -> None:
+        with (
+            patch("src.main.load_snapshot", return_value={"groups": []}),
+            patch("src.main.read_lock_pid", return_value=None),
+            patch("src.main.os.kill") as mock_kill,
+        ):
+            rc = main(["--reload", "--no-syslog"])
+        self.assertEqual(rc, 2)
+        mock_kill.assert_not_called()
+
+    def test_stats_prints_table_without_config_load(self) -> None:
+        stats_out = """IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port               Conns   InPkts  OutPkts  InBytes OutBytes
+  -> RemoteAddress:Port
+TCP  95.217.145.226:53                  70      226       26    13588     1236
+  -> 192.168.13.201:53                  52      208        8    12508      516
+"""
+        cp = subprocess.CompletedProcess(args=["ipvsadm", "-ln", "--stats"], returncode=0, stdout=stats_out, stderr="")
+        output = io.StringIO()
+        with (
+            patch("src.main.ipvs_exec._run", return_value=cp),
+            patch("src.main.load_snapshot") as mock_load,
+            redirect_stdout(output),
+        ):
+            rc = main(["--stats", "--no-syslog"])
+        self.assertEqual(rc, 0)
+        out = output.getvalue()
+        self.assertIn("TYPE", out)
+        self.assertIn("PROTO", out)
+        self.assertIn("NAME", out)
+        self.assertIn("svc", out)
+        self.assertIn("rs", out)
+        self.assertIn("95.217.145.226:53", out)
+        mock_load.assert_not_called()
 
 
 if __name__ == "__main__":

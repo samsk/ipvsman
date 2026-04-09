@@ -22,10 +22,10 @@ def merge_backends(
     file_backends: list[Backend],
     map_backends: list[Backend],
 ) -> list[Backend]:
-    """Merge backend definitions with last-write-wins by IP."""
+    """Merge backend definitions with last-write-wins by address."""
     merged: dict[str, Backend] = {}
     for item in inline_backends + file_backends + map_backends:
-        merged[item.ip] = item
+        merged[item.address] = item
     return list(merged.values())
 
 

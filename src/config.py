@@ -47,6 +47,9 @@ class Config:
     log_level: str
     debug: bool
     prometheus_metrics: bool
+    prometheus_metrics_stats: bool
+    prometheus_metrics_healthchecks: bool
+    prometheus_metrics_stats_labels: str
     prometheus_host: str
     prometheus_port: int
     api_enable: bool
@@ -59,8 +62,12 @@ class Config:
     startup_full_replace: bool
     test_mode: bool
     status_mode: bool
+    stats_mode: bool
     status_detailed: bool
     reset_mode: bool
+    dump_mode: bool
+    reload_mode: bool
+    pid_hint: int | None
     healthcheck_now: bool
     healthcheck_now_group: str | None
     healthcheck_now_backend: str | None
@@ -93,7 +100,13 @@ def has_cli_action(cfg: Config) -> bool:
         return True
     if cfg.status_mode or cfg.status_detailed:
         return True
+    if cfg.stats_mode:
+        return True
     if cfg.reset_mode:
+        return True
+    if cfg.dump_mode:
+        return True
+    if cfg.reload_mode:
         return True
     if cfg.disable_group or cfg.disable_frontend or cfg.disable_backend:
         return True
@@ -111,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             f"  {constants.SCRIPT_NAME} --test\n"
             f"  {constants.SCRIPT_NAME} -s\n"
+            f"  {constants.SCRIPT_NAME} --stats\n"
             f"  {constants.SCRIPT_NAME} --status-detailed --show-counters\n"
             f"  {constants.SCRIPT_NAME} --service"
         ),
@@ -168,8 +182,12 @@ def build_parser() -> argparse.ArgumentParser:
     ops = p.add_argument_group("One-shot actions")
     ops.add_argument("--test", dest="test_mode", action="store_true", help="Validate config and exit")
     ops.add_argument("-s", "--status", dest="status_mode", action="store_true", help="Print one-shot status")
-    ops.add_argument("-S", "--status-detailed", action="store_true", help="Print detailed status report")
+    ops.add_argument("-S", "--stats", dest="stats_mode", action="store_true", help="Print one-shot live IPVS stats")
+    ops.add_argument("--status-detailed", action="store_true", help="Print detailed status report")
     ops.add_argument("--reset", dest="reset_mode", action="store_true", help="Clear managed state and exit")
+    ops.add_argument("--dump", dest="dump_mode", action="store_true", help="Dump live IPVS config and exit")
+    ops.add_argument("--reload", dest="reload_mode", action="store_true", help="Validate config, signal daemon reload, and exit")
+    ops.add_argument("--pid", dest="pid_hint", type=int, default=None, help="Daemon PID hint for --reload")
     ops.add_argument("--healthcheck-now", action="store_true", help="Run all checks once and exit")
     ops.add_argument("--healthcheck-now-group", default=None, help="Run checks for one group")
     ops.add_argument("--healthcheck-now-backend", default=None, help="Run checks for one backend group/ip")
@@ -191,6 +209,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     api = p.add_argument_group("API and metrics")
     api.add_argument("--prometheus-metrics", action="store_true", help="Enable Prometheus metrics endpoint")
+    api.add_argument(
+        "--no-prometheus-metrics-stats",
+        dest="prometheus_metrics_stats",
+        action="store_false",
+        help="Disable live IPVS stats metrics in Prometheus output",
+    )
+    api.add_argument(
+        "--no-prometheus-metrics-healthcheks",
+        dest="prometheus_metrics_healthchecks",
+        action="store_false",
+        help="Disable healthcheck metrics in Prometheus output",
+    )
+    api.add_argument(
+        "--prometheus-metrics-stats-labels",
+        choices=["configured", "route", "both"],
+        default="configured",
+        help="IPVS stats labels mode: configured|route|both (default: configured)",
+    )
     api.add_argument("--prometheus-host", default=constants.DEFAULT_PROM_HOST, help=f"Metrics bind host (default: {constants.DEFAULT_PROM_HOST})")
     api.add_argument("--prometheus-port", type=int, default=constants.DEFAULT_PROM_PORT, help=f"Metrics bind port (default: {constants.DEFAULT_PROM_PORT})")
     api.add_argument("--api-enable", action="store_true", help="Enable HTTP API")

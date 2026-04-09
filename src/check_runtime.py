@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import threading
 import time
 from typing import Any
@@ -95,9 +96,10 @@ def update_health_state(
 class CheckRuntime:
     """Thread pool health-check scheduler."""
 
-    def __init__(self, workers: int, state: RuntimeState) -> None:
+    def __init__(self, workers: int, state: RuntimeState, log: logging.Logger | None = None) -> None:
         self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers))
         self._state = state
+        self._log = log
         self._next_due: dict[str, float] = {}
         self._schedule_lock = threading.Lock()
         self._backend_locks: dict[str, threading.Lock] = {}
@@ -106,6 +108,19 @@ class CheckRuntime:
         self._pending_lock = threading.Lock()
         w = max(1, workers)
         self._max_pending = max(64, w * 16)
+
+    @staticmethod
+    def _parse_key(key: str) -> tuple[str, str, str, int]:
+        """Parse backend health key into parts."""
+        parts = key.split("|", 3)
+        if len(parts) != 4:
+            return "unknown", "unknown", key, 0
+        group, frontend, backend_ip, backend_port_txt = parts
+        try:
+            backend_port = int(backend_port_txt)
+        except ValueError:
+            backend_port = 0
+        return group, frontend, backend_ip, backend_port
 
     def _lock_for_backend(self, key: str) -> threading.Lock:
         """Serialize probe + health RMW per backend key."""
@@ -154,10 +169,28 @@ class CheckRuntime:
             now = time.time()
             prev = self._state.get_health(key)
             ok, message = run_one_check(target, hc)
-            self._state.set_health(
-                key,
-                update_health_state(prev, ok, now, hc.rise, hc.fall, message),
-            )
+            next_state = update_health_state(prev, ok, now, hc.rise, hc.fall, message)
+            self._state.set_health(key, next_state)
+            if self._log is None:
+                return
+            group, frontend, backend_ip, backend_port = self._parse_key(key)
+            if (not ok) and prev.fail_count == 0:
+                self._log.info(
+                    "NOTICE healthcheck start failing group=%s frontend=%s backend=%s:%s msg=%s",
+                    group,
+                    frontend,
+                    backend_ip,
+                    backend_port,
+                    message,
+                )
+            if next_state.state == HEALTH_UNHEALTHY and prev.state != HEALTH_UNHEALTHY:
+                self._log.critical(
+                    "ALERT backend disabled by healthcheck group=%s frontend=%s backend=%s:%s",
+                    group,
+                    frontend,
+                    backend_ip,
+                    backend_port,
+                )
 
     def stop(self) -> None:
         """Stop worker pool."""

@@ -20,6 +20,14 @@ def _backend_state(weight: int) -> str:
     return "DOWN" if int(weight) == 0 else "UP"
 
 
+def _effective_backend_weight(row: dict[str, Any]) -> int:
+    """Return live weight when known, else desired weight."""
+    live_weight = row.get("live_weight")
+    if live_weight is not None:
+        return int(live_weight)
+    return int(row["weight"])
+
+
 def _service_state(backends: list[dict[str, Any]], live_present: bool) -> str:
     """Return aggregate service state.
 
@@ -33,7 +41,7 @@ def _service_state(backends: list[dict[str, Any]], live_present: bool) -> str:
     if not live_present:
         return "DEGRADED"
     for rs in backends:
-        if _backend_state(int(rs["weight"])) == "DOWN":
+        if _backend_state(_effective_backend_weight(rs)) == "DOWN":
             return "DEGRADED"
     return "UP"
 
@@ -44,7 +52,7 @@ def print_status(snapshot: dict[str, Any], live_state: Any, output: str = "table
     degraded = False
     for svc in report["services"]:
         for rs in svc["backends"]:
-            if int(rs["weight"]) == 0:
+            if _effective_backend_weight(rs) == 0:
                 degraded = True
     if output == "json":
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -53,7 +61,7 @@ def print_status(snapshot: dict[str, Any], live_state: Any, output: str = "table
         print(f"status={status_label} services={len(report['services'])}")
         for svc in report["services"]:
             backends = svc["backends"]
-            up_count = sum(1 for rs in backends if _backend_state(int(rs["weight"])) == "UP")
+            up_count = sum(1 for rs in backends if _backend_state(_effective_backend_weight(rs)) == "UP")
             svc_state = _service_state(backends, bool(svc["live_present"]))
             print(
                 f"[{svc_state}] {svc['proto']} {svc['vip']}:{svc['port']} "
@@ -62,6 +70,11 @@ def print_status(snapshot: dict[str, Any], live_state: Any, output: str = "table
                 f"backends_up={up_count}/{len(backends)}"
             )
             for rs in backends:
-                state = _backend_state(int(rs["weight"]))
-                print(f"  - [{state}] {rs['ip']}:{rs['port']} weight={rs['weight']}")
+                actual = _effective_backend_weight(rs)
+                desired = int(rs.get("desired_weight", rs["weight"]))
+                state = _backend_state(actual)
+                if actual != desired:
+                    print(f"  - [{state}] {rs['ip']}:{rs['port']} weight={actual}/{desired}")
+                else:
+                    print(f"  - [{state}] {rs['ip']}:{rs['port']} weight={actual}")
     return 1 if degraded else 0

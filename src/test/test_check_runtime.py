@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src.check_runtime import CheckRuntime, update_health_state
 from src.models import HealthCheck, RuntimeCheckResult
@@ -110,6 +110,18 @@ class CheckRuntimeTest(unittest.TestCase):
         with patch("src.check_runtime.run_one_check") as mocked:
             runtime.check_service(service)
             self.assertEqual(mocked.call_count, 0)
+
+    def test_logs_notice_and_alert_on_fail_to_unhealthy(self) -> None:
+        state = RuntimeState()
+        log = Mock()
+        runtime = CheckRuntime(1, state, log=log)
+        target = CheckTarget(ip="127.0.0.1", port=80, type="tcp")
+        hc = HealthCheck.model_validate({"type": "tcp", "interval": 1, "timeout": 1, "rise": 1, "fall": 1})
+        key = "g1|f1|10.0.0.1|80"
+        with patch("src.check_runtime.run_one_check", return_value=(False, "timeout")):
+            runtime._run_backend(key, target, hc)
+        log.info.assert_called_once()
+        log.critical.assert_called_once()
 
 
 if __name__ == "__main__":

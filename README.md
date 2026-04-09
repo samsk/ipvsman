@@ -47,6 +47,7 @@ ipvsman.py --status-detailed --filter-group dns-core --watch 2
 | `--reload-interval` | `30.0` | config reload trigger seconds |
 | `--stats-interval` | `15.0` | live IPVS poll seconds (0 to disable)|
 | `--lock-file` | `/run/ipvsman/ipvsman.lock` | single-instance lock file |
+| `--pid` | unset | daemon PID hint for `--reload` |
 | `--check-workers` | `16` | healthcheck worker count |
 | `--shutdown-timeout` | `10.0` | worker shutdown wait seconds |
 | `--cold-start-sec` | `30.0` | startup grace for unknown health |
@@ -70,8 +71,37 @@ ipvsman.py --status-detailed --filter-group dns-core --watch 2
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--prometheus-metrics` | disabled | enable metrics endpoint |
+| `--no-prometheus-metrics-stats` | disabled | do not export live `ipvsadm --stats` metrics |
+| `--no-prometheus-metrics-healthcheks` | disabled | do not export healthcheck metrics |
+| `--prometheus-metrics-stats-labels` | `configured` | stats label mode: `configured`, `route`, or `both` |
 | `--prometheus-host` | `localhost` | standalone metrics bind host |
 | `--prometheus-port` | `9110` | standalone metrics bind port |
+
+**Naming:** backend resolve metrics mirror backend IP change — global `ipvsman_backend_resolve_error_events_total`, per-frontend `ipvsman_backend_resolve_errors_total` / `ipvsman_backend_resolve_errors_last_timestamp_seconds`. When live IPVS stats are enabled, scrape errors increment `ipvsman_ipvs_stats_scrape_failures_total` (counter).
+
+Configured stats labels:
+- service metrics: `group`, `frontend`
+- real metrics: `group`, `frontend`, `address`, `backend_port` (`address` maps to configured backend address/hostname when available)
+
+Healthcheck metrics:
+- `ipvsman_healthcheck_state` (`1` healthy, `0` unhealthy, `-1` unknown)
+- `ipvsman_healthcheck_ready` (`1` ready, `0` not ready)
+- Labels follow the same configured/route/both mode as stats labels.
+
+Example alert (Prometheus):
+
+```yaml
+groups:
+  - name: ipvsman
+    rules:
+      - alert: IpvsmanIpvsStatsScrapeFailing
+        expr: increase(ipvsman_ipvs_stats_scrape_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: ipvsman cannot read live IPVS stats for metrics
+```
 
 ### Output and filters
 
@@ -97,8 +127,11 @@ ipvsman.py --status-detailed --filter-group dns-core --watch 2
 | `--list-backends` | disabled | list backends |
 | `--list-healthchecks` | disabled | list healthcheck rows |
 | `--status`, `-s` | disabled | one-shot status |
+| `--stats`, `-S` | disabled | one-shot live IPVS stats (`ipvsadm -ln --stats`) |
 | `--status-detailed` | disabled | detailed report |
 | `--reset` | disabled | clear managed state |
+| `--dump` | disabled | dump live IPVS config (`ipvsadm -Sn`) |
+| `--reload` | disabled | validate config, then send `SIGHUP` to daemon |
 | `--healthcheck-now` | disabled | run all checks once |
 | `--healthcheck-now-group` | unset | run checks for one group |
 | `--healthcheck-now-backend` | unset | run checks for one backend |

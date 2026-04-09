@@ -8,7 +8,7 @@ import unittest
 from contextlib import redirect_stdout
 
 from src.cli_observability import print_detailed
-from src.ipvs_exec import LiveIpvsState
+from src.ipvs_exec import LiveIpvsState, RealServer, VirtualService
 from src.status_cmd import print_status
 
 
@@ -80,6 +80,43 @@ class StatusObservabilityTest(unittest.TestCase):
         self.assertIn("backends_up=1/2", out)
         self.assertIn("  - [UP] 10.0.0.1:80", out)
         self.assertIn("pkts_in=0 pkts_out=0", out)
+
+    def test_status_shows_actual_desired_when_different(self) -> None:
+        live = LiveIpvsState(
+            services=[
+                VirtualService(
+                    proto="tcp",
+                    vip="127.0.0.1",
+                    port=80,
+                    scheduler="wrr",
+                    reals=[RealServer(ip="10.0.0.1", port=80, weight=0)],
+                )
+            ]
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = print_status(self._snapshot(), live, output="table")
+        self.assertEqual(rc, 1)
+        out = buf.getvalue()
+        self.assertIn("weight=0/1", out)
+
+    def test_detailed_shows_actual_desired_when_different(self) -> None:
+        live = LiveIpvsState(
+            services=[
+                VirtualService(
+                    proto="tcp",
+                    vip="127.0.0.1",
+                    port=80,
+                    scheduler="wrr",
+                    reals=[RealServer(ip="10.0.0.1", port=80, weight=0)],
+                )
+            ]
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_detailed(self._snapshot(), live, output="table", show_counters=False, only_active=False)
+        out = buf.getvalue()
+        self.assertIn("weight=0/1 (actual/desired)", out)
 
 
 if __name__ == "__main__":

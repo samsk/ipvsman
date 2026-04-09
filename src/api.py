@@ -78,6 +78,9 @@ class ApiServer:
         enable_write: bool,
         max_body_bytes: int,
         enable_metrics: bool = False,
+        metrics_include_ipvs_stats: bool = True,
+        metrics_include_healthchecks: bool = True,
+        metrics_ipvs_stats_labels_mode: str = "configured",
         shutdown_timeout: float = 2.0,
         rate_limit_per_minute: int | None = None,
     ) -> None:
@@ -89,6 +92,9 @@ class ApiServer:
         self._enable_write = enable_write
         self._max_body_bytes = max_body_bytes
         self._enable_metrics = enable_metrics
+        self._metrics_include_ipvs_stats = metrics_include_ipvs_stats
+        self._metrics_include_healthchecks = metrics_include_healthchecks
+        self._metrics_ipvs_stats_labels_mode = metrics_ipvs_stats_labels_mode
         self._shutdown_timeout = max(0.1, shutdown_timeout)
         self._rate_limit = _IpRateLimiter(rate_limit_per_minute or constants.DEFAULT_API_RATE_LIMIT_PER_MINUTE)
         self._http: ThreadingHTTPServer | None = None
@@ -135,6 +141,9 @@ class ApiServer:
                         body, content_type = generate_metrics_body(
                             state,
                             openmetrics=wants_openmetrics(self.headers.get("Accept")),
+                            include_ipvs_stats=server._metrics_include_ipvs_stats,
+                            include_healthchecks=server._metrics_include_healthchecks,
+                            ipvs_stats_labels_mode=server._metrics_ipvs_stats_labels_mode,
                         )
                     except ModuleNotFoundError:
                         msg = b"prometheus_client not installed\n"

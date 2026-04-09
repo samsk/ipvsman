@@ -47,7 +47,7 @@ def desired_services(snapshot: dict[str, Any]) -> list[VirtualService]:
                         ip=rs["ip"],
                         port=int(rs["port"]),
                         weight=int(rs["weight"]),
-                        method=str(rs.get("method", rs.get("proxy_method", "routing"))),
+                        method=str(rs.get("method", rs.get("proxy_method", "nat"))),
                     )
                     for rs in svc.get("reals", [])
                 ],
@@ -126,6 +126,16 @@ def build_report(snapshot: dict[str, Any], live: LiveIpvsState | None = None) ->
     for svc in desired:
         key = (svc.proto, svc.vip, svc.port)
         key_variants = _service_key_variants(svc.proto, svc.vip, svc.port)
+        live_svc = next((ls for ls in live.services if _service_key_variants(ls.proto, ls.vip, ls.port) & key_variants), None)
+        live_rs_by_key = {(r.ip, r.port): r for r in (live_svc.reals if live_svc is not None else [])}
+        backends: list[dict[str, Any]] = []
+        for rs in svc.reals:
+            row = asdict(rs)
+            live_rs = live_rs_by_key.get((rs.ip, rs.port))
+            row["desired_weight"] = int(rs.weight)
+            row["live_weight"] = int(live_rs.weight) if live_rs is not None else None
+            row["weight"] = int(rs.weight)
+            backends.append(row)
         group_name, frontend_name = svc_meta.get(key, ("-", "-"))
         out_services.append(
             {
@@ -136,7 +146,7 @@ def build_report(snapshot: dict[str, Any], live: LiveIpvsState | None = None) ->
                 "port": svc.port,
                 "scheduler": svc.scheduler,
                 "live_present": len(key_variants & live_keys) > 0,
-                "backends": [asdict(rs) for rs in svc.reals],
+                "backends": backends,
             }
         )
     return {

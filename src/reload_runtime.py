@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from pathlib import Path
@@ -38,14 +39,20 @@ class ReloadRuntime:
                 continue
             self._reload_event.clear()
             try:
+                time.sleep(random.uniform(0.0, 0.5))
                 snap = load_snapshot(self._config_dir)
+                with self._state.lock:
+                    prev_generation = int(self._state.desired_generation)
                 generation = update_desired_snapshot(self._state, snap, carry_live_state=True)
                 with self._state.lock:
                     self._state.last_reload_at = time.time()
                     self._state.last_reload_error = None
+                if generation < prev_generation:
+                    self._log.warning("reload generation moved backwards prev=%s new=%s", prev_generation, generation)
                 for w in snap.get("warnings", []):
                     self._log.warning("reload warning: %s", w)
-                self._log.info("reload ok generation=%s", generation)
+                if generation != prev_generation:
+                    self._log.info("reload ok prev_generation=%s generation=%s", prev_generation, generation)
             except Exception as exc:
                 with self._state.lock:
                     self._state.last_reload_error = str(exc)

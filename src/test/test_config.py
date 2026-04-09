@@ -42,6 +42,11 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(cfg.status_mode)
         self.assertTrue(has_cli_action(cfg))
 
+    def test_stats_short_flag(self) -> None:
+        cfg = parse_config(["-S"])
+        self.assertTrue(cfg.stats_mode)
+        self.assertTrue(has_cli_action(cfg))
+
     def test_enable_runtime_toggles(self) -> None:
         cfg = parse_config(
             [
@@ -62,9 +67,32 @@ class ConfigTest(unittest.TestCase):
         cfg = parse_config(["--disable-group", "g1"])
         self.assertTrue(has_cli_action(cfg))
 
+    def test_dump_flag_is_cli_action(self) -> None:
+        cfg = parse_config(["--dump"])
+        self.assertTrue(cfg.dump_mode)
+        self.assertTrue(has_cli_action(cfg))
+
+    def test_reload_flag_is_cli_action(self) -> None:
+        cfg = parse_config(["--reload", "--pid", "1234"])
+        self.assertTrue(cfg.reload_mode)
+        self.assertEqual(cfg.pid_hint, 1234)
+        self.assertTrue(has_cli_action(cfg))
+
     def test_reload_interval_zero_allowed(self) -> None:
         cfg = parse_config(["--reload-interval", "0"])
         self.assertEqual(cfg.reload_interval, 0.0)
+
+    def test_disable_prometheus_stats_flag(self) -> None:
+        cfg = parse_config(["--no-prometheus-metrics-stats"])
+        self.assertFalse(cfg.prometheus_metrics_stats)
+
+    def test_disable_prometheus_healthchecks_flag(self) -> None:
+        cfg = parse_config(["--no-prometheus-metrics-healthcheks"])
+        self.assertFalse(cfg.prometheus_metrics_healthchecks)
+
+    def test_prometheus_stats_labels_mode(self) -> None:
+        cfg = parse_config(["--prometheus-metrics-stats-labels", "both"])
+        self.assertEqual(cfg.prometheus_metrics_stats_labels, "both")
 
     def test_api_token_from_env(self) -> None:
         with patch.dict(os.environ, {"IPVSMAN_API_TOKEN": "env-secret"}, clear=False):

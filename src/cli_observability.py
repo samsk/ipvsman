@@ -21,6 +21,14 @@ def _backend_state(weight: int) -> str:
     return "DOWN" if int(weight) == 0 else "UP"
 
 
+def _effective_backend_weight(row: dict[str, Any]) -> int:
+    """Return live weight when known, else desired weight."""
+    live_weight = row.get("live_weight")
+    if live_weight is not None:
+        return int(live_weight)
+    return int(row["weight"])
+
+
 def _service_state(backends: list[dict[str, Any]], live_present: bool) -> str:
     """Return service aggregate state.
 
@@ -34,7 +42,7 @@ def _service_state(backends: list[dict[str, Any]], live_present: bool) -> str:
     if not live_present:
         return "DEGRADED"
     for rs in backends:
-        if _backend_state(int(rs["weight"])) == "DOWN":
+        if _backend_state(_effective_backend_weight(rs)) == "DOWN":
             return "DEGRADED"
     return "UP"
 
@@ -68,7 +76,7 @@ def print_detailed(
     print(f"status-detailed services={svc_count}")
     for svc in report["services"]:
         backends = svc["backends"]
-        up_count = sum(1 for rs in backends if _backend_state(int(rs["weight"])) == "UP")
+        up_count = sum(1 for rs in backends if _backend_state(_effective_backend_weight(rs)) == "UP")
         svc_state = _service_state(backends, bool(svc["live_present"]))
         print(
             f"[{svc_state}] {svc['group']}/{svc['frontend_name']} "
@@ -77,10 +85,16 @@ def print_detailed(
             f"backends_up={up_count}/{len(backends)}"
         )
         for rs in svc["backends"]:
-            state = _backend_state(int(rs["weight"]))
+            actual = _effective_backend_weight(rs)
+            desired = int(rs.get("desired_weight", rs["weight"]))
+            state = _backend_state(actual)
+            if actual != desired:
+                weight_text = f"{actual}/{desired} (actual/desired)"
+            else:
+                weight_text = f"{actual}"
             line = (
                 f"  - [{state}] {rs['ip']}:{rs['port']} "
-                f"weight={rs['weight']} conn_active={rs.get('active_conn', 0)} "
+                f"weight={weight_text} conn_active={rs.get('active_conn', 0)} "
                 f"conn_inactive={rs.get('inactive_conn', 0)}"
             )
             if show_counters:

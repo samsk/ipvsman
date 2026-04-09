@@ -14,7 +14,7 @@ class RealServer:
     ip: str
     port: int
     weight: int
-    method: str = "routing"
+    method: str = "nat"
     active_conn: int = 0
     inactive_conn: int = 0
     inpkts: int = 0
@@ -31,6 +31,11 @@ class VirtualService:
     vip: str
     port: int
     scheduler: str
+    conns: int = 0
+    inpkts: int = 0
+    outpkts: int = 0
+    inbytes: int = 0
+    outbytes: int = 0
     reals: list[RealServer] = field(default_factory=list)
 
 
@@ -120,7 +125,53 @@ def parse_ipvsadm_ln(output: str) -> LiveIpvsState:
 
 def parse_ipvsadm_stats(output: str) -> IpvsStatsSnapshot:
     """Parse `ipvsadm -ln --stats` output."""
-    state = parse_ipvsadm_ln(output)
+    state = LiveIpvsState()
+    current: VirtualService | None = None
+    for line in output.splitlines():
+        s = line.strip()
+        if (
+            not s
+            or s.startswith("IP Virtual Server")
+            or s.startswith("Prot ")
+            or s.startswith("-> RemoteAddress:Port")
+        ):
+            continue
+        parts = s.split()
+        if s.startswith("TCP") or s.startswith("UDP"):
+            if len(parts) < 7:
+                continue
+            proto = parts[0].lower()
+            host, port_text = parts[1].rsplit(":", 1)
+            current = VirtualService(
+                proto=proto,
+                vip=host,
+                port=int(port_text),
+                scheduler="unknown",
+                conns=int(parts[2]),
+                inpkts=int(parts[3]),
+                outpkts=int(parts[4]),
+                inbytes=int(parts[5]),
+                outbytes=int(parts[6]),
+            )
+            state.services.append(current)
+            continue
+        if current is not None and s.startswith("->"):
+            if len(parts) < 7 or ":" not in parts[1]:
+                continue
+            ip, ptxt = parts[1].rsplit(":", 1)
+            current.reals.append(
+                RealServer(
+                    ip=ip,
+                    port=int(ptxt),
+                    weight=0,
+                    method="unknown",
+                    active_conn=int(parts[2]),
+                    inpkts=int(parts[3]),
+                    outpkts=int(parts[4]),
+                    inbytes=int(parts[5]),
+                    outbytes=int(parts[6]),
+                )
+            )
     return IpvsStatsSnapshot(services=state.services)
 
 
@@ -138,6 +189,18 @@ def read_stats() -> IpvsStatsSnapshot:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "ipvsadm --stats failed")
     return parse_ipvsadm_stats(proc.stdout)
+
+
+def read_dump() -> str:
+    """Read live IPVS dump in save format.
+
+    Output:
+    - Raw `ipvsadm -Sn` output text.
+    """
+    proc = _run(["ipvsadm", "-Sn"])
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "ipvsadm -Sn failed")
+    return proc.stdout
 
 
 def _svc_args(svc: VirtualService) -> list[str]:
